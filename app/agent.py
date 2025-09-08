@@ -4,7 +4,7 @@ import json
 
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from dotenv import load_dotenv
 
 from app.tools import get_property_details, get_suburb_trends
@@ -54,8 +54,12 @@ def call_model(state: AgentState):
     Returns a dict updating the state's `tool_calls` with the model message (which may contain tool calls).
     """
     query = state["query"]
-    ai_message: AIMessage = agent_model.invoke(query)
-    return {"tool_calls": [ai_message]}
+    prior_messages = state.get("tool_calls", [])
+    # Build conversation: always append the latest user message to history
+    messages = (prior_messages or []) + [HumanMessage(content=query)]
+    ai_message: AIMessage = agent_model.invoke(messages)
+    # Append the AI's message to history
+    return {"tool_calls": messages + [ai_message]}
 
 
 def call_tool(state: AgentState):
@@ -98,7 +102,8 @@ def call_tool(state: AgentState):
         content = output
 
     tool_message = ToolMessage(content=content, tool_call_id=tool_call_id or "")
-    return {"tool_calls": [tool_message]}
+    # Append tool output to history
+    return {"tool_calls": state["tool_calls"] + [tool_message]}
 
 
 def should_continue(state: AgentState):

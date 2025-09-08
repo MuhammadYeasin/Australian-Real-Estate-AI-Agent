@@ -1,4 +1,5 @@
 from app.agent import app
+from typing import List
 
 try:
     from langchain_core.messages import ToolMessage, AIMessage
@@ -21,17 +22,21 @@ def _extract_final_output(state: dict) -> str:
 
 
 def main() -> None:
+    history: List[object] = []
     while True:
         user_input = input("Ask a question about Melbourne real estate (type 'exit' to quit): ")
         if user_input.strip().lower() == "exit":
             break
 
         try:
-            state = app.invoke({"query": user_input})
+            # Persist conversation by passing prior tool_calls history
+            state = app.invoke({"query": user_input, "tool_calls": history})
             output = _extract_final_output(state)
             print("\n=== Agent Response ===")
             print(output if output else "No response produced.")
             print("======================\n")
+            # Update history for next turn
+            history = state.get("tool_calls", history)
         except Exception as e:
             print(f"Error: {e}")
 
