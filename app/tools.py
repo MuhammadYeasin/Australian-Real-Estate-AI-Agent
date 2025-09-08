@@ -135,7 +135,7 @@ class PropertySearchInput(PydanticModel):
     address: str = Field(..., description="Full street address to look up (case-insensitive)")
 
 
-@tool(name="get_property_details", args_schema=PropertySearchInput)
+@tool(args_schema=PropertySearchInput)
 def get_property_details(address: str):
     """Searches for and retrieves the details of a specific property by its address."""
     result = _provider.find_property_by_address(address)
@@ -152,7 +152,7 @@ class SuburbTrendsInput(PydanticModel):
     suburb: str = Field(..., description="Suburb name to calculate trends for (case-insensitive)")
 
 
-@tool(name="get_suburb_trends", args_schema=SuburbTrendsInput)
+@tool(args_schema=SuburbTrendsInput)
 def get_suburb_trends(suburb: str):
     """Calculates and returns the median price, property count, and average land size for a given suburb."""
     result = _provider.calculate_suburb_trends(suburb)
