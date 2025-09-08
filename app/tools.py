@@ -2,7 +2,11 @@ from typing import List, Optional
 
 import pandas as pd
 
-from app.models import Property, SuburbTrends
+# Support running as module (python -m app.tools) and as script (python app/tools.py)
+try:
+    from app.models import Property, SuburbTrends
+except ModuleNotFoundError:  # When executed as a script, use local import
+    from models import Property, SuburbTrends  # type: ignore
 
 
 class RealEstateDataProvider:
@@ -42,21 +46,24 @@ class RealEstateDataProvider:
             if column_name not in df.columns:
                 df[column_name] = pd.NA
 
-        # Basic cleaning
-        df = df.dropna(subset=["Price"])  # must have a price
-        df["Bathroom"] = df["Bathroom"].fillna(0)
-        df["Landsize"] = df["Landsize"].fillna(0)
-
         # Normalize types where sensible
         with pd.option_context("mode.chained_assignment", None):
-            df["Price"] = pd.to_numeric(df["Price"], errors="coerce")
-            df["Bathroom"] = pd.to_numeric(df["Bathroom"], errors="coerce").fillna(0).astype(int)
-            df["Landsize"] = pd.to_numeric(df["Landsize"], errors="coerce").fillna(0.0)
+            # Clean price strings like "$1,200,000" -> "1200000"
+            if "Price" in df.columns:
+                price_str = df["Price"].astype(str).str.replace(r"[^0-9\.]", "", regex=True)
+                price_str = price_str.replace({"": pd.NA})
+                df["Price"] = pd.to_numeric(price_str, errors="coerce")
             df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce")
+            df["Bathroom"] = pd.to_numeric(df["Bathroom"], errors="coerce")
+            df["Landsize"] = pd.to_numeric(df["Landsize"], errors="coerce")
             df["YearBuilt"] = pd.to_numeric(df["YearBuilt"], errors="coerce")
 
-        # Re-drop any rows that became NaN for essential numeric fields after coercion
-        df = df.dropna(subset=["Price", "Rooms"])  # require price and rooms
+        # Drop rows with missing price only
+        df = df.dropna(subset=["Price"])  # must have a price
+
+        # Fill non-critical fields after coercion
+        df["Bathroom"] = df["Bathroom"].fillna(0).astype(int)
+        df["Landsize"] = df["Landsize"].fillna(0.0)
 
         self.df = df
 
@@ -84,9 +91,9 @@ class RealEstateDataProvider:
         if self.df.empty or not address:
             return None
 
-        address_norm = address.casefold()
+        address_norm = address.strip().casefold()
         df = self.df.copy()
-        mask = df["Address"].astype(str).str.casefold() == address_norm
+        mask = df["Address"].astype(str).str.strip().str.casefold() == address_norm
         matches = df[mask]
         if matches.empty:
             return None
@@ -125,9 +132,10 @@ class RealEstateDataProvider:
 # ----------------------------
 from langchain.tools import tool
 from pydantic import BaseModel as PydanticModel, Field
+from pathlib import Path
 
-# Use the existing dataset in the repository (adjust if you relocate the file)
-_DATASET_PATH = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/dataset/Melbourne_housing_FULL.csv"
+# Use the confirmed absolute dataset path
+_DATASET_PATH = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/data/Melbourne_housing_FULL.csv"
 _provider = RealEstateDataProvider(_DATASET_PATH)
 
 
@@ -164,3 +172,47 @@ def get_suburb_trends(suburb: str):
     return result.dict()
 
 
+### testing
+
+# Add this at the very bottom of app/tools.py
+
+if __name__ == '__main__':
+    # Use the confirmed absolute dataset path
+    csv_file_path = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/data/Melbourne_housing_FULL.csv"
+
+    print(f"Attempting to load data from: {csv_file_path}")
+
+    try:
+        # Test 1: Initialize the data provider
+        provider = RealEstateDataProvider(csv_path=csv_file_path)
+        print("✅ Data provider initialized successfully.")
+        print("DataFrame columns:", provider.df.columns.tolist())
+        print("DataFrame head:\n", provider.df.head())
+
+        # Test 2: Test the property search function
+        # Use an address you KNOW is in the CSV file
+        test_address = "85 Turner St" # <-- IMPORTANT: Change to a real address from your CSV
+        print(f"\nSearching for address: '{test_address}'...")
+        property_result = provider.find_property_by_address(test_address)
+        if property_result:
+            print("✅ Found Property:")
+            print(property_result.model_dump_json(indent=2))
+        else:
+            print("❌ FAILED to find property. Check your address and search logic.")
+
+        # Test 3: Test the suburb trends function
+        # Use a suburb you KNOW is in the CSV file
+        test_suburb = "Abbotsford" # <-- IMPORTANT: Change to a real suburb from your CSV
+        print(f"\nCalculating trends for suburb: '{test_suburb}'...")
+        suburb_result = provider.calculate_suburb_trends(test_suburb)
+        if suburb_result:
+            print("✅ Calculated Trends:")
+            print(suburb_result.model_dump_json(indent=2))
+        else:
+            print("❌ FAILED to calculate trends. Check your suburb name and calculation logic.")
+
+    except FileNotFoundError:
+        print("\n❌ CRITICAL ERROR: FileNotFoundError!")
+        print("The CSV file was not found. Please check the 'csv_file_path' variable.")
+    except Exception as e:
+        print(f"\n❌ An unexpected error occurred: {e}")
