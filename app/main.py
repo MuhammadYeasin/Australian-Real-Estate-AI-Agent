@@ -48,9 +48,9 @@ def main() -> None:
             if langsmith_client:
                 try:
                     langsmith_client.create_run(
-                        name="real_estate_conversation",
-                        run_type="chain",
-                        inputs={"user_query": user_input, "session_id": session_id},
+                        "real_estate_conversation",
+                        {"user_query": user_input, "session_id": session_id},
+                        "chain",
                         project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
                     )
                 except Exception as e:
@@ -68,9 +68,9 @@ def main() -> None:
             if langsmith_client:
                 try:
                     langsmith_client.create_run(
-                        name="real_estate_conversation_complete",
-                        run_type="chain",
-                        outputs={"agent_response": output, "session_id": session_id},
+                        "real_estate_conversation_complete",
+                        {"agent_response": output, "session_id": session_id},
+                        "chain",
                         project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
                     )
                 except Exception as e:
@@ -84,9 +84,9 @@ def main() -> None:
             if langsmith_client:
                 try:
                     langsmith_client.create_run(
-                        name="real_estate_conversation_error",
-                        run_type="chain",
-                        outputs={"error": str(e), "session_id": session_id},
+                        "real_estate_conversation_error",
+                        {"error": str(e), "session_id": session_id},
+                        "chain",
                         project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
                     )
                 except Exception as langsmith_error:

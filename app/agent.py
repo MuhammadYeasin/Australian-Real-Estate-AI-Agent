@@ -74,9 +74,9 @@ def call_model(state: AgentState):
     if langsmith_client:
         try:
             langsmith_client.create_run(
-                name="real_estate_agent_model_call",
-                run_type="llm",
-                inputs={"messages": [msg.content for msg in messages if hasattr(msg, 'content')]},
+                "real_estate_agent_model_call",
+                {"messages": [msg.content for msg in messages if hasattr(msg, 'content')]},
+                "llm",
                 project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
             )
         except Exception as e:
@@ -88,9 +88,9 @@ def call_model(state: AgentState):
     if langsmith_client:
         try:
             langsmith_client.create_run(
-                name="real_estate_agent_model_response",
-                run_type="llm",
-                outputs={"response": ai_message.content, "tool_calls": getattr(ai_message, 'tool_calls', [])},
+                "real_estate_agent_model_response",
+                {"response": ai_message.content, "tool_calls": getattr(ai_message, 'tool_calls', [])},
+                "llm",
                 project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
             )
         except Exception as e:
@@ -119,9 +119,9 @@ def call_tool(state: AgentState):
     if langsmith_client:
         try:
             langsmith_client.create_run(
-                name=f"real_estate_tool_{tool_name}",
-                run_type="tool",
-                inputs={"tool_name": tool_name, "tool_args": tool_args},
+                f"real_estate_tool_{tool_name}",
+                {"tool_name": tool_name, "tool_args": tool_args},
+                "tool",
                 project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
             )
         except Exception as e:
@@ -143,9 +143,9 @@ def call_tool(state: AgentState):
         if langsmith_client:
             try:
                 langsmith_client.create_run(
-                    name=f"real_estate_tool_{tool_name}_error",
-                    run_type="tool",
-                    outputs={"error": content},
+                    f"real_estate_tool_{tool_name}_error",
+                    {"error": content},
+                    "tool",
                     project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
                 )
             except Exception as e:
@@ -169,9 +169,9 @@ def call_tool(state: AgentState):
     if langsmith_client:
         try:
             langsmith_client.create_run(
-                name=f"real_estate_tool_{tool_name}_success",
-                run_type="tool",
-                outputs={"result": content},
+                f"real_estate_tool_{tool_name}_success",
+                {"result": content},
+                "tool",
                 project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
             )
         except Exception as e:

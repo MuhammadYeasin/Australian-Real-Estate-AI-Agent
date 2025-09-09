@@ -169,6 +169,10 @@ LANGCHAIN_ENDPOINT=https://your-custom-endpoint.com
 - Check the project name matches in LangSmith
 - Wait a few minutes for traces to appear
 
+### API Call Errors
+- The integration uses the correct LangSmith API format: `client.create_run(name, inputs, run_type, project_name=...)`
+- If you see "missing 1 required positional argument: 'inputs'" errors, ensure you're using the latest version of the code
+
 ### Performance Issues
 - LangSmith adds minimal overhead
 - Disable tracing if needed by removing `LANGCHAIN_API_KEY`
