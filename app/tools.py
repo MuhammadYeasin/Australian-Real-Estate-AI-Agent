@@ -1,6 +1,8 @@
 from typing import List, Optional
+import os
 
 import pandas as pd
+from langsmith import Client
 
 # Support running as module (python -m app.tools) and as script (python app/tools.py)
 try:
@@ -138,6 +140,14 @@ from pathlib import Path
 _DATASET_PATH = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/data/Melbourne_housing_FULL.csv"
 _provider = RealEstateDataProvider(_DATASET_PATH)
 
+# Initialize LangSmith client for tool tracing
+_langsmith_client = None
+if os.getenv("LANGCHAIN_API_KEY"):
+    try:
+        _langsmith_client = Client()
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to initialize LangSmith client in tools: {e}")
+
 
 class PropertySearchInput(PydanticModel):
     address: str = Field(..., description="Full street address to look up (case-insensitive)")
@@ -146,14 +156,53 @@ class PropertySearchInput(PydanticModel):
 @tool(args_schema=PropertySearchInput)
 def get_property_details(address: str):
     """Searches for and retrieves the details of a specific property by its address."""
+    # Log tool execution to LangSmith if available
+    if _langsmith_client:
+        try:
+            _langsmith_client.create_run(
+                name="get_property_details",
+                run_type="tool",
+                inputs={"address": address},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error in get_property_details: {e}")
+    
     result = _provider.find_property_by_address(address)
     if result is None:
+        # Log no result found
+        if _langsmith_client:
+            try:
+                _langsmith_client.create_run(
+                    name="get_property_details_no_result",
+                    run_type="tool",
+                    outputs={"result": None, "message": f"No property found for address: {address}"},
+                    project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+                )
+            except Exception as e:
+                print(f"⚠️  LangSmith logging error in get_property_details: {e}")
         return None
+    
     # Return a JSON-serializable dict using original dataset column names via aliases
     dumper = getattr(result, "model_dump", None)
     if callable(dumper):
-        return dumper(by_alias=True)
-    return result.dict(by_alias=True)
+        output = dumper(by_alias=True)
+    else:
+        output = result.dict(by_alias=True)
+    
+    # Log successful result to LangSmith if available
+    if _langsmith_client:
+        try:
+            _langsmith_client.create_run(
+                name="get_property_details_success",
+                run_type="tool",
+                outputs={"result": output, "message": f"Property found for address: {address}"},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error in get_property_details: {e}")
+    
+    return output
 
 
 class SuburbTrendsInput(PydanticModel):
@@ -163,13 +212,52 @@ class SuburbTrendsInput(PydanticModel):
 @tool(args_schema=SuburbTrendsInput)
 def get_suburb_trends(suburb: str):
     """Calculates and returns the median price, property count, and average land size for a given suburb."""
+    # Log tool execution to LangSmith if available
+    if _langsmith_client:
+        try:
+            _langsmith_client.create_run(
+                name="get_suburb_trends",
+                run_type="tool",
+                inputs={"suburb": suburb},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error in get_suburb_trends: {e}")
+    
     result = _provider.calculate_suburb_trends(suburb)
     if result is None:
+        # Log no result found
+        if _langsmith_client:
+            try:
+                _langsmith_client.create_run(
+                    name="get_suburb_trends_no_result",
+                    run_type="tool",
+                    outputs={"result": None, "message": f"No data found for suburb: {suburb}"},
+                    project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+                )
+            except Exception as e:
+                print(f"⚠️  LangSmith logging error in get_suburb_trends: {e}")
         return None
+    
     dumper = getattr(result, "model_dump", None)
     if callable(dumper):
-        return dumper()
-    return result.dict()
+        output = dumper()
+    else:
+        output = result.dict()
+    
+    # Log successful result to LangSmith if available
+    if _langsmith_client:
+        try:
+            _langsmith_client.create_run(
+                name="get_suburb_trends_success",
+                run_type="tool",
+                outputs={"result": output, "message": f"Trends calculated for suburb: {suburb}"},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error in get_suburb_trends: {e}")
+    
+    return output
 
 
 ### testing

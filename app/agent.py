@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from dotenv import load_dotenv
+from langsmith import Client
 
 from app.tools import get_property_details, get_suburb_trends
 
@@ -24,6 +25,16 @@ tools = [get_property_details, get_suburb_trends]
 # Load environment from .env if present
 load_dotenv()
 
+# Initialize LangSmith client for tracing and monitoring
+langsmith_client = None
+if os.getenv("LANGCHAIN_API_KEY"):
+    try:
+        langsmith_client = Client()
+        print("✅ LangSmith client initialized successfully")
+    except Exception as e:
+        print(f"⚠️  Warning: Failed to initialize LangSmith client: {e}")
+        print("   LangSmith tracing will be disabled")
+
 # Initialize LLM (requires OPENAI_API_KEY)
 if not os.getenv("OPENAI_API_KEY"):
     raise RuntimeError(
@@ -40,6 +51,7 @@ __all__ = [
     "tools",
     "llm",
     "agent_model",
+    "langsmith_client",
     "StateGraph",
     "END",
 ]
@@ -57,7 +69,33 @@ def call_model(state: AgentState):
     prior_messages = state.get("tool_calls", [])
     # Build conversation: always append the latest user message to history
     messages = (prior_messages or []) + [HumanMessage(content=query)]
+    
+    # Log to LangSmith if available
+    if langsmith_client:
+        try:
+            langsmith_client.create_run(
+                name="real_estate_agent_model_call",
+                run_type="llm",
+                inputs={"messages": [msg.content for msg in messages if hasattr(msg, 'content')]},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error: {e}")
+    
     ai_message: AIMessage = agent_model.invoke(messages)
+    
+    # Log the response to LangSmith if available
+    if langsmith_client:
+        try:
+            langsmith_client.create_run(
+                name="real_estate_agent_model_response",
+                run_type="llm",
+                outputs={"response": ai_message.content, "tool_calls": getattr(ai_message, 'tool_calls', [])},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error: {e}")
+    
     # Append the AI's message to history
     return {"tool_calls": messages + [ai_message]}
 
@@ -77,6 +115,18 @@ def call_tool(state: AgentState):
     tool_args = tool_call.get("args") or {}
     tool_call_id = tool_call.get("id")
 
+    # Log tool execution to LangSmith if available
+    if langsmith_client:
+        try:
+            langsmith_client.create_run(
+                name=f"real_estate_tool_{tool_name}",
+                run_type="tool",
+                inputs={"tool_name": tool_name, "tool_args": tool_args},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error: {e}")
+
     # Find the matching tool by name
     selected_tool = None
     for t in tools:
@@ -87,7 +137,21 @@ def call_tool(state: AgentState):
     if selected_tool is None:
         # Return a tool message indicating failure to locate tool
         content = json.dumps({"error": f"Tool not found: {tool_name}"})
-        return {"tool_calls": [ToolMessage(content=content, tool_call_id=tool_call_id or "")]}
+        error_message = ToolMessage(content=content, tool_call_id=tool_call_id or "")
+        
+        # Log tool error to LangSmith if available
+        if langsmith_client:
+            try:
+                langsmith_client.create_run(
+                    name=f"real_estate_tool_{tool_name}_error",
+                    run_type="tool",
+                    outputs={"error": content},
+                    project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+                )
+            except Exception as e:
+                print(f"⚠️  LangSmith logging error: {e}")
+        
+        return {"tool_calls": [error_message]}
 
     # Invoke tool with provided arguments
     output = selected_tool.invoke(tool_args)
@@ -100,6 +164,18 @@ def call_tool(state: AgentState):
             content = str(output)
     else:
         content = output
+
+    # Log tool success to LangSmith if available
+    if langsmith_client:
+        try:
+            langsmith_client.create_run(
+                name=f"real_estate_tool_{tool_name}_success",
+                run_type="tool",
+                outputs={"result": content},
+                project_name=os.getenv("LANGCHAIN_PROJECT", "Australian-Real-Estate-Agent")
+            )
+        except Exception as e:
+            print(f"⚠️  LangSmith logging error: {e}")
 
     tool_message = ToolMessage(content=content, tool_call_id=tool_call_id or "")
     # Append tool output to history
