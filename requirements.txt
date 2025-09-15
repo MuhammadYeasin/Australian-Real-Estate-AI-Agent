@@ -5,3 +5,4 @@ langchain_openai
 pandas
 python-dotenv
 langsmith
+requests

@@ -1,7 +1,9 @@
 from typing import List, Optional
 import os
+from urllib.parse import urlencode
 
 import pandas as pd
+import requests
 from langsmith import Client
 
 # Support running as module (python -m app.tools) and as script (python app/tools.py)
@@ -12,62 +14,87 @@ except ModuleNotFoundError:  # When executed as a script, use local import
 
 
 class RealEstateDataProvider:
-    """Provides access and simple analytics over a real estate CSV dataset."""
+    """Provides access and simple analytics over real estate data via Domain.com.au API.
 
-    REQUIRED_COLUMNS = [
-        "Address",
-        "Suburb",
-        "Rooms",
-        "Type",
-        "Price",
-        "Bathroom",
-        "Landsize",
-        "YearBuilt",
-    ]
+    Uses HTTP API to query real estate listings on demand.
+    """
 
-    def __init__(self, csv_path: str) -> None:
-        self.csv_path = csv_path
-        self.df: pd.DataFrame = pd.DataFrame()
-        self._load_data()
 
-    def _load_data(self) -> None:
-        """Load and clean the CSV data into a DataFrame.
+    def __init__(self, api_base_url: str) -> None:
+        self.api_base_url = api_base_url.strip("/")
+        self._http: requests.Session = requests.Session()
+        self._api_headers: dict = {}
+        self._agency_id: str = os.getenv("REAL_ESTATE_AGENCY_ID") or "22473"
+        
+        # Configure auth header (Domain API commonly uses Bearer token)
+        token = os.getenv("REAL_ESTATE_API_TOKEN") or "04fd474f22acfbad451b634bea9ad0d9"
+        if token:
+            self._api_headers["Authorization"] = f"Bearer {token}"
+        # Add Domain.com.au specific headers
+        self._api_headers["accept"] = "application/json"
+        self._api_headers["X-Api-Call-Source"] = "live-api-browser"
 
-        - Handles file not found by keeping an empty DataFrame
-        - Drops rows with missing prices
-        - Fills missing Bathroom and Landsize values with 0
-        """
+
+    # -------- API helpers --------
+    def _parse_price_from_text(self, text: Optional[str]) -> float:
+        if not text:
+            return 0.0
         try:
-            df = pd.read_csv(self.csv_path)
-        except FileNotFoundError:
-            self.df = pd.DataFrame(columns=self.REQUIRED_COLUMNS)
-            return
+            import re
+            numbers = re.findall(r"\d+[\,\.]?\d*", text)
+            if not numbers:
+                return 0.0
+            numeric = numbers[0].replace(",", "")
+            return float(numeric)
+        except Exception:
+            return 0.0
 
-        # Ensure expected columns exist; add any missing with default NA
-        for column_name in self.REQUIRED_COLUMNS:
-            if column_name not in df.columns:
-                df[column_name] = pd.NA
+    def _map_external_property(self, item: dict) -> pd.Series:
+        """Map an external API listing (Domain-style) to our canonical columns."""
+        address_parts = item.get("addressParts", {}) or {}
+        display_address = address_parts.get("displayAddress")
+        if not display_address:
+            unit = address_parts.get("unitNumber")
+            street_no = address_parts.get("streetNumber")
+            street = address_parts.get("street")
+            suburb = address_parts.get("suburb")
+            state = address_parts.get("stateAbbreviation")
+            postcode = address_parts.get("postcode")
+            parts: List[str] = []
+            if unit and street_no:
+                parts.append(f"{unit}/{street_no}")
+            elif street_no:
+                parts.append(str(street_no))
+            if street:
+                parts.append(str(street))
+            local_parts: List[str] = []
+            if suburb:
+                local_parts.append(str(suburb))
+            if state:
+                local_parts.append(str(state).upper())
+            if postcode:
+                local_parts.append(str(postcode))
+            display_address = ", ".join([" ".join(parts), " ".join(local_parts)]).strip(", ") if parts or local_parts else None
 
-        # Normalize types where sensible
-        with pd.option_context("mode.chained_assignment", None):
-            # Clean price strings like "$1,200,000" -> "1200000"
-            if "Price" in df.columns:
-                price_str = df["Price"].astype(str).str.replace(r"[^0-9\.]", "", regex=True)
-                price_str = price_str.replace({"": pd.NA})
-                df["Price"] = pd.to_numeric(price_str, errors="coerce")
-            df["Rooms"] = pd.to_numeric(df["Rooms"], errors="coerce")
-            df["Bathroom"] = pd.to_numeric(df["Bathroom"], errors="coerce")
-            df["Landsize"] = pd.to_numeric(df["Landsize"], errors="coerce")
-            df["YearBuilt"] = pd.to_numeric(df["YearBuilt"], errors="coerce")
+        property_types = item.get("propertyTypes") or []
+        property_type = property_types[0] if property_types else None
 
-        # Drop rows with missing price only
-        df = df.dropna(subset=["Price"])  # must have a price
+        price_details = item.get("priceDetails") or {}
+        display_price = price_details.get("displayPrice")
+        price_value = self._parse_price_from_text(display_price)
 
-        # Fill non-critical fields after coercion
-        df["Bathroom"] = df["Bathroom"].fillna(0).astype(int)
-        df["Landsize"] = df["Landsize"].fillna(0.0)
+        mapped = {
+            "Address": display_address,
+            "Suburb": address_parts.get("suburb"),
+            "Rooms": int(item.get("bedrooms") or 0) if item.get("bedrooms") is not None else None,
+            "Type": property_type or "",
+            "Price": price_value,
+            "Bathroom": int(item.get("bathrooms") or 0) if item.get("bathrooms") is not None else 0,
+            "Landsize": float(item.get("landSize") or 0.0) if item.get("landSize") is not None else 0.0,
+            "YearBuilt": int(item.get("yearBuilt")) if item.get("yearBuilt") is not None else None,
+        }
+        return pd.Series(mapped)
 
-        self.df = df
 
     def _row_to_property(self, row: pd.Series) -> Property:
         """Convert a DataFrame row into a Property model using alias keys."""
@@ -90,44 +117,96 @@ class RealEstateDataProvider:
 
     def find_property_by_address(self, address: str) -> Optional[Property]:
         """Find a single property by exact address (case-insensitive)."""
-        if self.df.empty or not address:
+        if not address:
             return None
 
-        address_norm = address.strip().casefold()
-        df = self.df.copy()
-        mask = df["Address"].astype(str).str.strip().str.casefold() == address_norm
-        matches = df[mask]
-        if matches.empty:
+        try:
+            # Fetch listings from agency endpoint and filter client-side by full address
+            # Pagination loop with sane cap
+            page = 1
+            page_size = 50
+            address_norm = address.strip().casefold()
+            while page <= 10:
+                query = urlencode({
+                    "listingStatusFilter": "live",
+                    "pageNumber": page,
+                    "pageSize": page_size,
+                })
+                url = f"{self.api_base_url}/v1/agencies/{self._agency_id}/listings?{query}"
+                resp = self._http.get(url, headers=self._api_headers, timeout=20)
+                resp.raise_for_status()
+                data = resp.json() or []
+                if isinstance(data, dict):
+                    items = data.get("results") or data.get("data") or []
+                else:
+                    items = data
+                if not items:
+                    break
+                for item in items:
+                    row = self._map_external_property(item)
+                    row_addr = str(row.get("Address") or "").strip().casefold()
+                    if row_addr and row_addr == address_norm:
+                        return self._row_to_property(row)
+                if len(items) < page_size:
+                    break
+                page += 1
             return None
-        # If multiple match, take the first
-        first_row = matches.iloc[0]
-        return self._row_to_property(first_row)
+        except Exception:
+            return None
 
     def calculate_suburb_trends(self, suburb: str) -> Optional[SuburbTrends]:
         """Calculate median price, count, and average land size for a suburb (case-insensitive)."""
-        if self.df.empty or not suburb:
+        if not suburb:
             return None
 
-        suburb_norm = suburb.casefold()
-        df = self.df.copy()
-        mask = df["Suburb"].astype(str).str.casefold() == suburb_norm
-        sdf = df[mask]
-        if sdf.empty:
+        try:
+            # Aggregate listings from the agency endpoint and compute trends client-side
+            page = 1
+            page_size = 100
+            rows: List[pd.Series] = []
+            suburb_norm = suburb.strip().casefold()
+            while page <= 10:
+                query = urlencode({
+                    "listingStatusFilter": "live",
+                    "pageNumber": page,
+                    "pageSize": page_size,
+                })
+                url = f"{self.api_base_url}/v1/agencies/{self._agency_id}/listings?{query}"
+                resp = self._http.get(url, headers=self._api_headers, timeout=25)
+                resp.raise_for_status()
+                data = resp.json() or []
+                if isinstance(data, dict):
+                    items = data.get("results") or data.get("data") or []
+                else:
+                    items = data
+                if not items:
+                    break
+                for item in items:
+                    s = self._map_external_property(item)
+                    s_suburb = str(s.get("Suburb") or "").casefold()
+                    if s_suburb == suburb_norm:
+                        rows.append(s)
+                if len(items) < page_size:
+                    break
+                page += 1
+            if not rows:
+                return None
+            df = pd.DataFrame(rows)
+            df = df.dropna(subset=["Price"]) if "Price" in df.columns else df
+            if df.empty:
+                return None
+            median_price = float(df["Price"].median()) if "Price" in df.columns else 0.0
+            property_count = int(len(df))
+            average_land_size = float(df["Landsize"].mean()) if "Landsize" in df.columns else 0.0
+            canonical_suburb = str(df.iloc[0]["Suburb"]) if "Suburb" in df.columns else suburb
+            return SuburbTrends(
+                suburb=canonical_suburb or suburb,
+                median_price=median_price,
+                property_count=property_count,
+                average_land_size=average_land_size,
+            )
+        except Exception:
             return None
-
-        median_price = float(sdf["Price"].median()) if not sdf["Price"].empty else 0.0
-        property_count = int(len(sdf))
-        average_land_size = float(sdf["Landsize"].mean()) if not sdf["Landsize"].empty else 0.0
-
-        # Use the canonical suburb name as seen in data for output consistency
-        canonical_suburb = str(sdf.iloc[0]["Suburb"]) if pd.notna(sdf.iloc[0]["Suburb"]) else suburb
-
-        return SuburbTrends(
-            suburb=canonical_suburb,
-            median_price=median_price,
-            property_count=property_count,
-            average_land_size=average_land_size,
-        )
 
 # ----------------------------
 # LangChain tool integrations
@@ -136,9 +215,9 @@ from langchain.tools import tool
 from pydantic import BaseModel as PydanticModel, Field
 from pathlib import Path
 
-# Use the confirmed absolute dataset path
-_DATASET_PATH = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/data/Melbourne_housing_FULL.csv"
-_provider = RealEstateDataProvider(_DATASET_PATH)
+# Configure data source: always use Domain.com.au API
+_API_BASE = os.getenv("REAL_ESTATE_API_BASE") or "https://api.domain.com.au/sandbox"
+_provider = RealEstateDataProvider(api_base_url=_API_BASE)
 
 # Initialize LangSmith client for tool tracing
 _langsmith_client = None
@@ -265,21 +344,21 @@ def get_suburb_trends(suburb: str):
 # Add this at the very bottom of app/tools.py
 
 if __name__ == '__main__':
-    # Use the confirmed absolute dataset path
-    csv_file_path = "/Users/muhammad/Documents/mySelf/projects/Australian Real Estate AI Agent/data/Melbourne_housing_FULL.csv"
-
-    print(f"Attempting to load data from: {csv_file_path}")
+    # Test API mode
+    api_base = os.getenv("REAL_ESTATE_API_BASE") or "https://api.domain.com.au/sandbox"
+    
+    print(f"Using Domain.com.au API. Base URL: {api_base}")
+    print(f"Agency ID: {os.getenv('REAL_ESTATE_AGENCY_ID', '22473')}")
+    print(f"API Token: {os.getenv('REAL_ESTATE_API_TOKEN', '04fd474f22acfbad451b634bea9ad0d9')[:10]}...")
 
     try:
         # Test 1: Initialize the data provider
-        provider = RealEstateDataProvider(csv_path=csv_file_path)
+        provider = RealEstateDataProvider(api_base_url=api_base)
         print("✅ Data provider initialized successfully.")
-        print("DataFrame columns:", provider.df.columns.tolist())
-        print("DataFrame head:\n", provider.df.head())
 
         # Test 2: Test the property search function
-        # Use an address you KNOW is in the CSV file
-        test_address = "85 Turner St" # <-- IMPORTANT: Change to a real address from your CSV
+        # Use an address from the API data
+        test_address = "209/7 Sterling Circuit, Camperdown NSW 2050" # From API data
         print(f"\nSearching for address: '{test_address}'...")
         property_result = provider.find_property_by_address(test_address)
         if property_result:
@@ -289,8 +368,8 @@ if __name__ == '__main__':
             print("❌ FAILED to find property. Check your address and search logic.")
 
         # Test 3: Test the suburb trends function
-        # Use a suburb you KNOW is in the CSV file
-        test_suburb = "Abbotsford" # <-- IMPORTANT: Change to a real suburb from your CSV
+        # Use a suburb from the API data
+        test_suburb = "Camperdown" # From API data
         print(f"\nCalculating trends for suburb: '{test_suburb}'...")
         suburb_result = provider.calculate_suburb_trends(test_suburb)
         if suburb_result:
@@ -299,8 +378,5 @@ if __name__ == '__main__':
         else:
             print("❌ FAILED to calculate trends. Check your suburb name and calculation logic.")
 
-    except FileNotFoundError:
-        print("\n❌ CRITICAL ERROR: FileNotFoundError!")
-        print("The CSV file was not found. Please check the 'csv_file_path' variable.")
     except Exception as e:
         print(f"\n❌ An unexpected error occurred: {e}")
